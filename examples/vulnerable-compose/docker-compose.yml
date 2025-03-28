@@ -1,0 +1,36 @@
+version: '3'
+
+services:
+  webapp:
+    image: python:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_PASSWORD=super_secret_password
+      - API_KEY=1234567890abcdef
+    # Running with privileged mode (security issue)
+    privileged: true
+    # No resource limits defined (security issue)
+    # No security options defined (security issue)
+    volumes:
+      - ./app:/app
+      # Mounting sensitive host directories (security issue)
+      - /etc:/host-etc
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Running as root by default (security issue)
+
+  database:
+    image: mysql:latest
+    ports:
+      # Exposing database on all interfaces (security issue)
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=another_secret_password
+    volumes:
+      - db-data:/var/lib/mysql
+
+volumes:
+  db-data:
