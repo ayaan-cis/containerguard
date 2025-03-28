@@ -319,9 +319,14 @@ def version():
     console.print("[bold]ContainerGuard[/bold] version 0.1.0")
     console.print("A comprehensive container security scanner")
     console.print("")
-    console.print("Created by Your Name")
-    console.print("Source: https://github.com/yourusername/containerguard")
+    console.print("Created by Ayaan Syed")
+    console.print("Source: https://github.com/ayaan-cis/containerguard")
 
+@app.command()
+def dashboard(port: int = 8080):
+    """Start the ContainerGuard dashboard server."""
+    from containerguard.frontend.server import start_server
+    start_server(port=port)
 
 def main():
     """Main entry point for the CLI."""

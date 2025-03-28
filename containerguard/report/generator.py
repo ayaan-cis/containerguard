@@ -16,6 +16,7 @@ from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel
 
 from containerguard.scanner.base import Finding, ScanResult
+from containerguard.report.visualizer import ReportVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class ReportConfig(BaseModel):
     include_details: bool = True
     include_remediation: bool = True
     include_charts: bool = True
+    include_dashboard: bool = True  # New option for dashboard inclusion
     max_findings: int = 1000
     template_path: Optional[str] = None
     custom_css: Optional[str] = None
@@ -69,6 +71,9 @@ class ReportGenerator:
             trim_blocks=True,
             lstrip_blocks=True,
         )
+
+        # Initialize visualizer
+        self.visualizer = ReportVisualizer()
 
         # Create output directory if it doesn't exist
         os.makedirs(self.config.output_dir, exist_ok=True)
@@ -137,6 +142,7 @@ class ReportGenerator:
                 "scanners": list(set(result.scanner_name for result in scan_results)),
             },
             "charts": {},
+            "dashboard": {},
         }
 
         # Combine findings from all results
@@ -153,6 +159,10 @@ class ReportGenerator:
         # Generate charts
         if self.config.include_charts:
             merged_context["charts"] = self._generate_charts_data(all_findings)
+
+        # Generate dashboard data
+        if self.config.include_dashboard:
+            merged_context["dashboard"] = self._generate_dashboard_data(all_findings, scan_results)
 
         # Generate report based on format
         if self.config.output_format == "html":
@@ -184,6 +194,11 @@ class ReportGenerator:
         if self.config.include_charts:
             charts = self._generate_charts_data(findings)
 
+        # Generate dashboard data if requested
+        dashboard = {}
+        if self.config.include_dashboard:
+            dashboard = self._generate_dashboard_data(findings, [scan_result])
+
         # Create context
         context = {
             "title": self.config.title,
@@ -205,6 +220,7 @@ class ReportGenerator:
                 **scan_result.summary,
             },
             "charts": charts,
+            "dashboard": dashboard,
             "metadata": scan_result.metadata,
         }
 
@@ -265,6 +281,112 @@ class ReportGenerator:
 
         return charts
 
+    def _generate_dashboard_data(self, findings: List[Dict[str, Any]], scan_results: List[ScanResult]) -> Dict[str, Any]:
+        """
+        Generate data for the interactive dashboard.
+
+        Args:
+            findings: List of finding dictionaries
+            scan_results: List of scan results
+
+        Returns:
+            Dashboard data dictionary
+        """
+        if not findings:
+            return {}
+
+        try:
+            # Convert to DataFrame for easier manipulation
+            df = pd.DataFrame(findings)
+
+            # Severity distribution
+            severity_data = []
+            severity_colors = {
+                "critical": "#ff3a33",
+                "high": "#ff8800",
+                "medium": "#ffcc00",
+                "low": "#88cc14",
+                "info": "#00bbff"
+            }
+
+            for severity, color in severity_colors.items():
+                count = len(df[df["severity"].str.lower() == severity]) if "severity" in df.columns else 0
+                if count > 0:
+                    severity_data.append({
+                        "name": severity.capitalize(),
+                        "value": count,
+                        "color": color
+                    })
+
+            # Calculate time-based data
+            timeline_data = []
+            if "timestamp" in df.columns:
+                # Group by month
+                df["month"] = pd.to_datetime(df["timestamp"]).dt.strftime("%b")
+                monthly_counts = df.groupby(["month", "category"]).size().unstack().fillna(0)
+
+                for month, row in monthly_counts.iterrows():
+                    entry = {"date": month}
+                    for category in row.index:
+                        entry[category] = row[category]
+                    timeline_data.append(entry)
+
+            # Top findings
+            top_findings = []
+            if "id" in df.columns and "title" in df.columns:
+                top_ids = df["id"].value_counts().head(5).index.tolist()
+                for id in top_ids:
+                    finding_rows = df[df["id"] == id]
+                    if not finding_rows.empty:
+                        top_findings.append({
+                            "name": id,
+                            "count": len(finding_rows),
+                            "category": finding_rows.iloc[0].get("category", "unknown"),
+                            "severity": finding_rows.iloc[0].get("severity", "medium")
+                        })
+
+            # Compliance data (mock for now, would be calculated from actual compliance results)
+            compliance_data = [
+                {"name": "CIS Docker", "score": 78, "color": "#4caf50"},
+                {"name": "NIST 800-190", "score": 85, "color": "#8bc34a"},
+                {"name": "PCI DSS", "score": 92, "color": "#cddc39"},
+                {"name": "HIPAA", "score": 80, "color": "#ffeb3b"},
+            ]
+
+            # Statistics
+            total_containers = sum(1 for result in scan_results if "container" in result.target.lower())
+            vulnerable_images = sum(1 for result in scan_results if result.critical_count > 0 or result.high_count > 0)
+
+            container_stats = [
+                {"name": "Total Containers", "value": max(total_containers, len(scan_results))},
+                {"name": "Vulnerable Images", "value": vulnerable_images},
+                {"name": "Total Findings", "value": len(findings)},
+                {"name": "Avg. Risk Score", "value": "67.5"},  # Placeholder, would calculate actual risk score
+            ]
+
+            # Recent findings (just use the most recent findings)
+            recent_findings = []
+            for i, finding in enumerate(sorted(findings, key=lambda x: x.get("timestamp", ""), reverse=True)):
+                if i >= 5:  # Limit to 5 recent findings
+                    break
+                recent_findings.append(finding)
+
+            # Build dashboard data
+            dashboard_data = {
+                "severity_data": severity_data,
+                "timeline_data": timeline_data,
+                "top_findings": top_findings,
+                "compliance_data": compliance_data,
+                "container_stats": container_stats,
+                "recent_findings": recent_findings
+            }
+
+            return dashboard_data
+
+        except Exception as e:
+            logger.error(f"Failed to generate dashboard data: {e}")
+            return {}
+
     def _generate_html_report(self, context: Dict[str, Any], multi: bool = False) -> str:
         """
         Generate an HTML report.
@@ -278,6 +400,11 @@ class ReportGenerator:
         """
         try:
             template_name = "multi_report.html" if multi else "report.html"
+
+            # If dashboard is included, use the dashboard template
+            if self.config.include_dashboard and context.get("dashboard"):
+                template_name = "dashboard_report.html"
+
             template = self.jinja_env.get_template(f"html/{template_name}")
             html_content = template.render(**context)
 
